@@ -42,6 +42,11 @@ class User(UserMixin, db.Model):
 def load_user(user_id):
     return User.query.get(int(user_id))
 
+# Root endpoint for health checks
+@app.route('/')
+def root():
+    return jsonify({'message': 'CCTV Chat Backend is running!', 'status': 'healthy'}), 200
+
 # User registration endpoint
 @app.route('/api/register', methods=['POST'])
 def register():

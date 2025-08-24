@@ -5,7 +5,7 @@
   },
   "deploy": {
     "startCommand": "python backend.py",
-    "healthcheckPath": "/api/profile",
+    "healthcheckPath": "/",
     "healthcheckTimeout": 100,
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
