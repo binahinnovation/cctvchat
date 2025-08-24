@@ -5,7 +5,7 @@ colorFrom: blue
 colorTo: indigo
 sdk: streamlit
 sdk_version: 1.45.1
-app_file: home.py
+app_file: appnavigation.py
 pinned: false
 ---
 
@@ -32,7 +32,7 @@ This application uses AI to analyze CCTV footage and provide intelligent summari
 
 The following environment variables need to be set in Hugging Face:
 
-- `DASHSCOPE_API_KEY`: Your Alibaba Cloud API key
+- `BACKEND_API_URL`: Your Railway backend URL (e.g., https://your-app.railway.app/api)
 
 ## Local Development
 
