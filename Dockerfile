@@ -6,7 +6,6 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
-    software-properties-common \
     git \
     && rm -rf /var/lib/apt/lists/*
 
@@ -20,11 +19,11 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p upload static
 
-# Expose the port Streamlit runs on
-EXPOSE 7860
+# Expose the port Flask runs on
+EXPOSE 5000
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 
-# Command to run the application
-CMD ["streamlit", "run", "home.py", "--server.port=7860", "--server.address=0.0.0.0"] 
+# Command to run the Flask backend
+CMD ["python", "backend.py"] 
