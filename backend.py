@@ -8,6 +8,14 @@ from flask_login import LoginManager, login_user, logout_user, login_required, c
 from werkzeug.utils import secure_filename
 from flask import send_from_directory
 from datetime import timedelta
+from openai import OpenAI
+from dotenv import load_dotenv
+import secrets
+import qrcode
+import io
+import base64
+
+load_dotenv()  # Load environment variables from .env if present
 
 app = Flask(__name__)
 CORS(app)
@@ -34,6 +42,8 @@ class User(UserMixin, db.Model):
     is_active = db.Column(db.Boolean, default=True)
     videos = db.relationship('Video', backref='user', lazy=True)
     chats = db.relationship('ChatHistory', backref='user', lazy=True)
+    whatsapp_number = db.Column(db.String(64), nullable=True, unique=True)
+    whatsapp_linked_at = db.Column(db.DateTime, nullable=True)
 
     def get_id(self):
         return str(self.id)
@@ -108,6 +118,13 @@ class ChatHistory(db.Model):
     answer = db.Column(db.Text)
     timestamp = db.Column(db.DateTime, server_default=db.func.now())
     model_used = db.Column(db.String(64))
+
+class WhatsAppLinkToken(db.Model):
+    token = db.Column(db.String(16), primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    used = db.Column(db.Boolean, default=False, nullable=False)
+    created_at = db.Column(db.DateTime, server_default=db.func.now())
 
 UPLOAD_FOLDER = os.path.join(os.getcwd(), 'upload')
 ALLOWED_EXTENSIONS = {'mp4', 'avi', 'mov', 'mkv', 'flv', 'wmv'}
@@ -333,7 +350,9 @@ def get_profile():
         'username': user.username,
         'created_at': user.created_at,
         'last_login': user.last_login,
-        'is_active': user.is_active
+        'is_active': user.is_active,
+        'whatsapp_number': user.whatsapp_number,
+        'whatsapp_linked_at': user.whatsapp_linked_at.isoformat() if user.whatsapp_linked_at else None
     }), 200
 
 # Update current user profile (username only for now)
@@ -384,19 +403,60 @@ def analyze_video():
     data = request.json
     video_id = data.get('video_id')
     question = data.get('question')
-    
+
     if not video_id or not question:
         return jsonify({'error': 'Video ID and question are required'}), 400
-    
+
     video = Video.query.filter_by(id=video_id, user_id=current_user.id).first()
     if not video:
         return jsonify({'error': 'Video not found or not owned by user'}), 404
-    
-    # For now, return a placeholder response
-    # In a real implementation, this would call the AI model
-    answer = f"Analysis of video {video.video_name}: {question} - This is a placeholder response. The actual AI analysis would be implemented here."
-    
-    return jsonify({'answer': answer}), 200
+
+    try:
+        # Build an accessible video URL
+        if video.video_type == 'upload' and video.file_path_or_url:
+            filename = os.path.basename(video.file_path_or_url)
+            video_url = request.host_url.rstrip('/') + f"/api/video_file/{filename}"
+        else:
+            video_url = video.file_path_or_url
+
+        # Initialize DashScope OpenAI-compatible client
+        dashscope_key = os.environ.get('DASHSCOPE_API_KEY')
+        if not dashscope_key:
+            return jsonify({'error': 'DASHSCOPE_API_KEY not configured on backend'}), 500
+
+        client = OpenAI(
+            api_key=dashscope_key,
+            base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+        )
+
+        # Compose request to Qwen-VL (OpenAI-compatible schema)
+        messages = [
+            {
+                "role": "system",
+                "content": [
+                    {"type": "text", "text": "You are Qwen-VL, an expert video analysis assistant. Answer concisely and factually based on the provided video."}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": question},
+                    {"type": "video_url", "video_url": {"url": video_url}},
+                ],
+            },
+        ]
+
+        completion = client.chat.completions.create(
+            model="qwen-vl-max",
+            messages=messages,
+            temperature=0.2,
+        )
+
+        answer = completion.choices[0].message.content if completion and completion.choices else "No answer generated."
+        return jsonify({'answer': answer}), 200
+
+    except Exception as e:
+        return jsonify({'error': f'AI analysis failed: {str(e)}'}), 500
 
 # Add chat endpoint
 @app.route('/api/add_chat', methods=['POST'])
@@ -424,6 +484,236 @@ def add_chat():
     db.session.commit()
     
     return jsonify({'message': 'Chat saved successfully', 'chat_id': chat.id}), 200
+
+# WhatsApp linking endpoints
+@app.route('/api/whatsapp/link-token', methods=['POST'])
+@login_required
+def generate_whatsapp_link_token():
+    """Generate a 6-digit token for WhatsApp linking"""
+    try:
+        # Generate 6-digit token
+        token = str(secrets.randbelow(900000) + 100000)
+        
+        # Set expiration (10 minutes from now)
+        from datetime import datetime, timedelta
+        expires_at = datetime.utcnow() + timedelta(minutes=10)
+        
+        # Store token in database
+        link_token = WhatsAppLinkToken(
+            token=token,
+            user_id=current_user.id,
+            expires_at=expires_at,
+            used=False
+        )
+        db.session.add(link_token)
+        db.session.commit()
+        
+        # Build WhatsApp deep link
+        twilio_whatsapp_number = os.environ.get('TWILIO_WHATSAPP_NUMBER', 'whatsapp:+1234567890')
+        # Extract phone number from whatsapp:+1234567890 format
+        phone_number = twilio_whatsapp_number.replace('whatsapp:', '').replace('+', '')
+        wa_link = f"https://wa.me/{phone_number}?text=LINK%20{token}"
+        
+        # Generate QR code
+        qr = qrcode.QRCode(version=1, box_size=10, border=5)
+        qr.add_data(wa_link)
+        qr.make(fit=True)
+        
+        img = qr.make_image(fill_color="black", back_color="white")
+        img_buffer = io.BytesIO()
+        img.save(img_buffer, format='PNG')
+        img_buffer.seek(0)
+        qr_base64 = base64.b64encode(img_buffer.getvalue()).decode()
+        
+        return jsonify({
+            'token': token,
+            'expires_at': expires_at.isoformat(),
+            'wa_link': wa_link,
+            'qr_base64': f"data:image/png;base64,{qr_base64}"
+        }), 200
+        
+    except Exception as e:
+        return jsonify({'error': f'Failed to generate token: {str(e)}'}), 500
+
+@app.route('/api/whatsapp/unlink', methods=['POST'])
+@login_required
+def unlink_whatsapp():
+    """Unlink WhatsApp from user account"""
+    try:
+        current_user.whatsapp_number = None
+        current_user.whatsapp_linked_at = None
+        db.session.commit()
+        return jsonify({'message': 'WhatsApp unlinked successfully'}), 200
+    except Exception as e:
+        return jsonify({'error': f'Failed to unlink WhatsApp: {str(e)}'}), 500
+
+# Twilio webhook endpoint
+@app.route('/twilio/webhook', methods=['POST'])
+def twilio_webhook():
+    """Handle incoming WhatsApp messages from Twilio"""
+    try:
+        from twilio.request_validator import RequestValidator
+        
+        # Validate Twilio signature
+        validator = RequestValidator(os.environ.get('TWILIO_AUTH_TOKEN', ''))
+        url = request.url
+        params = request.form.to_dict()
+        signature = request.headers.get('X-Twilio-Signature', '')
+        
+        if not validator.validate(url, params, signature):
+            return 'Invalid signature', 403
+        
+        # Extract message data
+        from_number = request.form.get('From', '')
+        message_body = request.form.get('Body', '').strip()
+        message_sid = request.form.get('MessageSid', '')
+        
+        # Normalize phone number
+        normalized_number = from_number if from_number.startswith('whatsapp:') else f'whatsapp:{from_number}'
+        
+        # Check if this is a linking token
+        if message_body.isdigit() and len(message_body) == 6:
+            # Try to link with token
+            token = message_body
+            
+            # Atomic token consumption
+            from datetime import datetime
+            link_token = WhatsAppLinkToken.query.filter_by(
+                token=token, 
+                used=False
+            ).filter(WhatsAppLinkToken.expires_at > datetime.utcnow()).first()
+            
+            if link_token:
+                # Mark token as used and link user
+                link_token.used = True
+                user = User.query.get(link_token.user_id)
+                if user:
+                    user.whatsapp_number = normalized_number
+                    user.whatsapp_linked_at = datetime.utcnow()
+                    db.session.commit()
+                    
+                    reply = f"✅ Linked successfully! You can now ask questions about your videos. Try: 'list my videos' or 'what happened yesterday on camera 1'"
+                else:
+                    reply = "❌ User not found. Please try again."
+            else:
+                reply = "❌ Token invalid or expired. Generate a new token from your dashboard."
+        else:
+            # Look up user by WhatsApp number
+            user = User.query.filter_by(whatsapp_number=normalized_number).first()
+            
+            if not user:
+                reply = "❌ No linked account found. Please generate a token from your dashboard and send it here."
+            else:
+                # Process natural language query
+                reply = process_whatsapp_query(user, message_body)
+        
+        # Send reply via TwiML
+        from flask import Response
+        twiml = f'<Response><Message>{reply}</Message></Response>'
+        return Response(twiml, mimetype='text/xml')
+        
+    except Exception as e:
+        # Log error and send friendly message
+        print(f"Twilio webhook error: {e}")
+        twiml = '<Response><Message>Sorry, something went wrong. Please try again later.</Message></Response>'
+        return Response(twiml, mimetype='text/xml')
+
+def process_whatsapp_query(user, query):
+    """Process natural language query and return summary"""
+    try:
+        query_lower = query.lower()
+        
+        # Simple command parsing
+        if 'list' in query_lower and ('video' in query_lower or 'camera' in query_lower):
+            # List user's videos
+            videos = Video.query.filter_by(user_id=user.id).limit(5).all()
+            if videos:
+                video_list = "\n".join([f"• {v.video_name} ({v.video_type})" for v in videos])
+                return f"📹 Your recent videos:\n{video_list}\n\nAsk about any video by name!"
+            else:
+                return "📹 No videos found. Upload some videos first!"
+        
+        elif 'what happened' in query_lower or 'analyze' in query_lower:
+            # Try to find video by name in query
+            videos = Video.query.filter_by(user_id=user.id).all()
+            matching_video = None
+            
+            for video in videos:
+                if video.video_name.lower() in query_lower:
+                    matching_video = video
+                    break
+            
+            if matching_video:
+                # Use existing Qwen analysis
+                try:
+                    # Build video URL for analysis
+                    if matching_video.video_type == 'upload' and matching_video.file_path_or_url:
+                        filename = os.path.basename(matching_video.file_path_or_url)
+                        video_url = f"{os.environ.get('APP_BASE_URL', 'http://localhost:5000')}/api/video_file/{filename}"
+                    else:
+                        video_url = matching_video.file_path_or_url
+                    
+                    # Call Qwen
+                    dashscope_key = os.environ.get('DASHSCOPE_API_KEY')
+                    if dashscope_key:
+                        client = OpenAI(
+                            api_key=dashscope_key,
+                            base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+                        )
+                        
+                        messages = [
+                            {
+                                "role": "system",
+                                "content": [{"type": "text", "text": "You are Qwen-VL. Provide a concise summary of what happens in this video, focusing on key events, people, and activities. Keep response under 200 words."}]
+                            },
+                            {
+                                "role": "user", 
+                                "content": [
+                                    {"type": "text", "text": query},
+                                    {"type": "video_url", "video_url": {"url": video_url}}
+                                ]
+                            }
+                        ]
+                        
+                        completion = client.chat.completions.create(
+                            model="qwen-vl-max",
+                            messages=messages,
+                            temperature=0.2,
+                        )
+                        
+                        answer = completion.choices[0].message.content if completion and completion.choices else "No analysis available."
+                        
+                        # Save to chat history
+                        chat = ChatHistory(
+                            video_id=matching_video.id,
+                            user_id=user.id,
+                            question=query,
+                            answer=answer,
+                            model_used="qwen-vl-max"
+                        )
+                        db.session.add(chat)
+                        db.session.commit()
+                        
+                        return f"🎥 Analysis of '{matching_video.video_name}':\n\n{answer}"
+                    else:
+                        return "❌ Analysis service not configured."
+                        
+                except Exception as e:
+                    return f"❌ Analysis failed: {str(e)}"
+            else:
+                return "❌ Video not found. Try 'list my videos' to see available videos."
+        
+        else:
+            return """🤖 Hi! I can help you with your CCTV videos. Try these commands:
+            
+📹 "list my videos" - Show your recent videos
+🎥 "what happened in [video name]" - Analyze a specific video
+🔍 "analyze [video name]" - Get detailed analysis
+
+Example: "what happened in my security footage" """
+            
+    except Exception as e:
+        return f"❌ Error processing query: {str(e)}"
 
 if __name__ == '__main__':
     with app.app_context():

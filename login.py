@@ -66,6 +66,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+# Initialize session state
 if 'auth_mode' not in st.session_state:
     st.session_state['auth_mode'] = 'login'
 if 'auth_token' not in st.session_state:
@@ -74,64 +75,98 @@ if 'user_info' not in st.session_state:
     st.session_state['user_info'] = None
 if 'login_attempted' not in st.session_state:
     st.session_state['login_attempted'] = False
+if 'force_rerun' not in st.session_state:
+    st.session_state['force_rerun'] = False
 
-def switch_mode():
-    st.session_state['auth_mode'] = 'register' if st.session_state['auth_mode'] == 'login' else 'login'
+def switch_to_register():
+    st.session_state['auth_mode'] = 'register'
+    st.session_state['force_rerun'] = True
+
+def switch_to_login():
+    st.session_state['auth_mode'] = 'login'
+    st.session_state['force_rerun'] = True
+
+# Handle force rerun
+if st.session_state.get('force_rerun', False):
+    st.session_state['force_rerun'] = False
+    st.rerun()
 
 with st.container():
     st.markdown('<div class="login-container">', unsafe_allow_html=True)
+    
     if st.session_state['auth_mode'] == 'login':
         st.markdown('<div class="login-title">Sign In to CCTV Chat</div>', unsafe_allow_html=True)
+        
         email = st.text_input("Email", key="login_email")
         password = st.text_input("Password", type="password", key="login_password")
-        if st.button("Sign In", key="login_btn"):
-            if not email or not password:
-                st.error("Please enter both email and password.")
-            else:
-                st.session_state['login_attempted'] = True
-                try:
-                    resp = requests.post(f"{API_URL}/login", json={"email": email, "password": password}, timeout=10)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        st.session_state['auth_token'] = resp.cookies.get('session')
-                        # Create user_info object with the expected format
-                        st.session_state['user_info'] = {
-                            'id': data.get('user_id'),
-                            'username': data.get('username'),
-                            'email': email  # We have the email from the form
-                        }
-                        st.session_state['current_page'] = 'home'  # Set current page to home
-                        st.success("Login successful! Redirecting...")
-                        st.info(f"Debug: auth_token={st.session_state['auth_token']}, user_info={st.session_state['user_info']}")
-                        st.rerun()
-                    else:
-                        st.error(resp.json().get('error', 'Login failed.'))
+        
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.button("Sign In", key="login_btn"):
+                if not email or not password:
+                    st.error("Please enter both email and password.")
+                else:
+                    st.session_state['login_attempted'] = True
+                    try:
+                        resp = requests.post(f"{API_URL}/login", json={"email": email, "password": password}, timeout=10)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            st.session_state['auth_token'] = resp.cookies.get('session')
+                            # Create user_info object with the expected format
+                            st.session_state['user_info'] = {
+                                'id': data.get('user_id'),
+                                'username': data.get('username'),
+                                'email': email  # We have the email from the form
+                            }
+                            st.session_state['current_page'] = 'home'  # Set current page to home
+                            st.success("Login successful! Redirecting...")
+                            st.rerun()
+                        else:
+                            st.error(resp.json().get('error', 'Login failed.'))
+                            st.session_state['login_attempted'] = False
+                    except Exception as e:
+                        st.error(f"Error: {e}")
                         st.session_state['login_attempted'] = False
-                except Exception as e:
-                    st.error(f"Error: {e}")
-                    st.session_state['login_attempted'] = False
-        st.markdown('<span class="switch-link" onclick="window.location.reload()">Don\'t have an account? <b>Register</b></span>', unsafe_allow_html=True)
-        if st.button("Switch to Register", key="switch_to_register"):
-            switch_mode()
-    else:
+        
+        with col2:
+            if st.button("Switch to Register", key="switch_to_register", on_click=switch_to_register):
+                pass
+        
+        st.markdown('<div style="text-align: center; margin-top: 1em; color: #666;">Don\'t have an account? Click "Switch to Register" above</div>', unsafe_allow_html=True)
+        
+    else:  # Register mode
         st.markdown('<div class="login-title">Create Your CCTV Chat Account</div>', unsafe_allow_html=True)
+        
         email = st.text_input("Email", key="register_email")
         username = st.text_input("Username", key="register_username")
         password = st.text_input("Password", type="password", key="register_password")
-        if st.button("Register", key="register_btn"):
-            if not email or not username or not password:
-                st.error("Please fill in all fields.")
-            else:
-                try:
-                    resp = requests.post(f"{API_URL}/register", json={"email": email, "username": username, "password": password}, timeout=10)
-                    if resp.status_code == 201:
-                        st.success("Registration successful! Please sign in.")
-                        st.session_state['auth_mode'] = 'login'
-                    else:
-                        st.error(resp.json().get('error', 'Registration failed.'))
-                except Exception as e:
-                    st.error(f"Error: {e}")
-        st.markdown('<span class="switch-link" onclick="window.location.reload()">Already have an account? <b>Sign In</b></span>', unsafe_allow_html=True)
-        if st.button("Switch to Login", key="switch_to_login"):
-            switch_mode()
+        confirm_password = st.text_input("Confirm Password", type="password", key="confirm_password")
+        
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            if st.button("Register", key="register_btn"):
+                if not email or not username or not password or not confirm_password:
+                    st.error("Please fill in all fields.")
+                elif password != confirm_password:
+                    st.error("Passwords do not match. Please try again.")
+                elif len(password) < 6:
+                    st.error("Password must be at least 6 characters long.")
+                else:
+                    try:
+                        resp = requests.post(f"{API_URL}/register", json={"email": email, "username": username, "password": password}, timeout=10)
+                        if resp.status_code == 201:
+                            st.success("Registration successful! Please sign in.")
+                            st.session_state['auth_mode'] = 'login'
+                            st.rerun()
+                        else:
+                            st.error(resp.json().get('error', 'Registration failed.'))
+                    except Exception as e:
+                        st.error(f"Error: {e}")
+        
+        with col2:
+            if st.button("Switch to Login", key="switch_to_login", on_click=switch_to_login):
+                pass
+        
+        st.markdown('<div style="text-align: center; margin-top: 1em; color: #666;">Already have an account? Click "Switch to Login" above</div>', unsafe_allow_html=True)
+    
     st.markdown('</div>', unsafe_allow_html=True) 

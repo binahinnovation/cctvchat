@@ -158,6 +158,60 @@ with st.sidebar:
     # Display notifications
     display_notifications()
     
+    # WhatsApp linking section
+    with st.expander("📱 Link WhatsApp"):
+        st.subheader("WhatsApp Integration")
+        
+        # Check if user already has WhatsApp linked
+        user_whatsapp = user_info.get('whatsapp_number')
+        if user_whatsapp:
+            st.success(f"✅ WhatsApp linked: {user_whatsapp}")
+            st.caption("You can now send messages to our WhatsApp bot!")
+            
+            if st.button("Unlink WhatsApp", key="unlink_whatsapp"):
+                try:
+                    resp = requests.post(f"{API_URL}/whatsapp/unlink", 
+                                       cookies={"session": st.session_state.get('auth_token')})
+                    if resp.status_code == 200:
+                        add_notification("WhatsApp unlinked successfully!", "success")
+                        st.toast("WhatsApp unlinked successfully!", icon="✅")
+                        st.rerun()
+                    else:
+                        st.error("Failed to unlink WhatsApp.")
+                except Exception as e:
+                    st.error(f"Error unlinking WhatsApp: {e}")
+        else:
+            st.info("Link your WhatsApp to ask questions about your videos via chat!")
+            
+            if st.button("🔗 Generate Link Token", key="generate_whatsapp_token"):
+                try:
+                    resp = requests.post(f"{API_URL}/whatsapp/link-token", 
+                                       cookies={"session": st.session_state.get('auth_token')})
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        token = data['token']
+                        wa_link = data['wa_link']
+                        qr_base64 = data['qr_base64']
+                        
+                        st.success(f"✅ Token generated: **{token}**")
+                        st.caption("This token expires in 10 minutes")
+                        
+                        # Display QR code
+                        st.image(qr_base64, caption="Scan to open WhatsApp with pre-filled message", width=200)
+                        
+                        # Display instructions
+                        st.markdown("### How to link:")
+                        st.markdown(f"1. **Scan the QR code above** OR")
+                        st.markdown(f"2. **Click this link**: [Open WhatsApp]({wa_link})")
+                        st.markdown(f"3. **Send the token**: `{token}`")
+                        
+                        add_notification("WhatsApp link token generated!", "success")
+                        st.toast("WhatsApp link token generated!", icon="✅")
+                    else:
+                        st.error("Failed to generate token.")
+                except Exception as e:
+                    st.error(f"Error generating token: {e}")
+    
     # Profile editing section
     with st.expander("⚙️ Edit Profile"):
         st.subheader("Profile Settings")
@@ -239,7 +293,7 @@ with st.sidebar:
     st.divider()
 
 # Hardcoded API key for testing
-DASHSCOPE_API_KEY = "sk-1c0c9b47d8244a0484498296fb8d3f1c"
+DASHSCOPE_API_KEY = "sk-28de10524837400cad8f5640cf1aa8a6"
 
 UPLOAD_FOLDER = 'upload'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -562,8 +616,9 @@ try:
                     # Chat history for this video
                     st.subheader("💬 Chat History")
                     chat_history = get_cached_chat_history(v['id'])
-                    if chat_history:
-                        for chat in chat_history:
+                    chats = chat_history.get('chats', []) if isinstance(chat_history, dict) else (chat_history or [])
+                    if chats:
+                        for chat in chats:
                             with st.expander(f"Q: {chat['question']} - {chat['timestamp']}"):
                                 st.write(f"**Question:** {chat['question']}")
                                 st.write(f"**Answer:** {chat['answer']}")
@@ -575,7 +630,7 @@ try:
                                         resp = requests.delete(f"{API_URL}/chat/{chat['id']}", 
                                                             cookies={"session": st.session_state.get('auth_token')})
                                         if resp.status_code == 200:
-                                            invalidate_cache('chat_history')
+                                            invalidate_cache('chat')
                                             add_notification("Q&A deleted successfully!", "success")
                                             st.toast("Q&A deleted successfully!", icon="✅")
                                             st.rerun()
@@ -616,7 +671,6 @@ try:
                     
                     if selected_prompt != "Select a prompt...":
                         user_question = selected_prompt
-                        st.session_state[f"question_{v['id']}"] = user_question
                     
                     if st.button("Ask AI", key=f"ask_{v['id']}"):
                         if user_question:
@@ -648,7 +702,7 @@ try:
                                                                  cookies={"session": st.session_state.get('auth_token')})
                                         
                                         if chat_resp.status_code == 200:
-                                            invalidate_cache('chat_history')
+                                            invalidate_cache('chat')
                                             add_notification("Analysis completed!", "success")
                                             st.toast("Analysis completed!", icon="✅")
                                             st.rerun()
