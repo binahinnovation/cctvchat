@@ -57,30 +57,19 @@ def load_user(user_id):
 def root():
     return jsonify({'message': 'CCTV Chat Backend is running!', 'status': 'healthy'}), 200
 
-# Debug endpoint to check environment variables
-@app.route('/debug/env')
-def debug_env():
-    """Debug endpoint to check environment variables"""
-    env_vars = {}
-    all_env_vars = {}
-    
-    # Get all environment variables for debugging
-    for key, value in os.environ.items():
-        all_env_vars[key] = 'SET' if value else 'NOT SET'
-        if any(prefix in key.upper() for prefix in ['TWILIO', 'DASHSCOPE', 'SECRET', 'DATABASE']):
-            env_vars[key] = 'SET' if value else 'NOT SET'
+# Health check endpoint with environment status
+@app.route('/health')
+def health_check():
+    """Health check endpoint with environment status"""
+    env_status = {}
+    for key in ['TWILIO_AUTH_TOKEN', 'TWILIO_ACCOUNT_SID', 'TWILIO_WHATSAPP_NUMBER', 'DASHSCOPE_API_KEY']:
+        env_status[key] = 'SET' if os.environ.get(key) else 'NOT SET'
     
     return jsonify({
-        'message': 'Environment variables debug - Redeploy Test',
-        'target_variables': env_vars,
-        'all_variables': all_env_vars
+        'status': 'healthy',
+        'environment': env_status,
+        'timestamp': str(datetime.utcnow())
     }), 200
-
-# Simple test endpoint
-@app.route('/test')
-def test():
-    """Simple test endpoint"""
-    return jsonify({'message': 'Test endpoint working', 'timestamp': str(datetime.utcnow())}), 200
 
 # User registration endpoint
 @app.route('/api/register', methods=['POST'])
@@ -592,17 +581,8 @@ def twilio_webhook():
     try:
         from twilio.request_validator import RequestValidator
         
-        # Debug: Print all environment variables that start with TWILIO
-        print("=== Environment Variables Debug ===")
-        for key, value in os.environ.items():
-            if key.startswith('TWILIO'):
-                print(f"{key}: {'*' * len(value) if value else 'NOT SET'}")
-        
         # Get Twilio auth token
         twilio_auth_token = os.environ.get('TWILIO_AUTH_TOKEN', '')
-        print(f"TWILIO_AUTH_TOKEN found: {bool(twilio_auth_token)}")
-        print(f"TWILIO_AUTH_TOKEN length: {len(twilio_auth_token) if twilio_auth_token else 0}")
-        
         if not twilio_auth_token:
             print("TWILIO_AUTH_TOKEN not found in environment variables")
             return 'Twilio auth token not configured', 403
@@ -612,10 +592,6 @@ def twilio_webhook():
         url = request.url
         params = request.form.to_dict()
         signature = request.headers.get('X-Twilio-Signature', '')
-        
-        print(f"Validating Twilio signature for URL: {url}")
-        print(f"Signature present: {bool(signature)}")
-        print(f"Params keys: {list(params.keys())}")
         
         # For development/testing, you might want to skip validation
         # In production, always validate
