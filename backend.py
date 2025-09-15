@@ -7,7 +7,7 @@ from flask_bcrypt import Bcrypt
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user, UserMixin
 from werkzeug.utils import secure_filename
 from flask import send_from_directory
-from datetime import timedelta
+from datetime import timedelta, datetime
 from openai import OpenAI
 from dotenv import load_dotenv
 import secrets
@@ -69,6 +69,12 @@ def debug_env():
         'message': 'Environment variables debug',
         'variables': env_vars
     }), 200
+
+# Simple test endpoint
+@app.route('/test')
+def test():
+    """Simple test endpoint"""
+    return jsonify({'message': 'Test endpoint working', 'timestamp': str(datetime.utcnow())}), 200
 
 # User registration endpoint
 @app.route('/api/register', methods=['POST'])
