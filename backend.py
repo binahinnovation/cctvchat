@@ -589,17 +589,35 @@ def twilio_webhook():
         
         # Validate Twilio signature
         validator = RequestValidator(twilio_auth_token)
-        url = request.url
         params = request.form.to_dict()
         signature = request.headers.get('X-Twilio-Signature', '')
+        
+        # Try multiple URL formats for validation
+        urls_to_try = [
+            request.url,  # Original URL
+            request.url.replace('http://', 'https://'),  # Force HTTPS
+            request.url.replace('https://', 'http://'),  # Force HTTP
+        ]
         
         # For development/testing, you might want to skip validation
         # In production, always validate
         skip_validation = os.environ.get('SKIP_TWILIO_VALIDATION', 'false').lower() == 'true'
         
-        if not skip_validation and not validator.validate(url, params, signature):
-            print("Twilio signature validation failed")
-            return 'Invalid signature', 403
+        if skip_validation:
+            print("Skipping Twilio signature validation (development mode)")
+        else:
+            validation_success = False
+            for url in urls_to_try:
+                if validator.validate(url, params, signature):
+                    print(f"Twilio signature validation successful with URL: {url}")
+                    validation_success = True
+                    break
+                else:
+                    print(f"Twilio signature validation failed with URL: {url}")
+            
+            if not validation_success:
+                print("Twilio signature validation failed with all URL formats")
+                return 'Invalid signature', 403
         
         # Extract message data
         from_number = request.form.get('From', '')
