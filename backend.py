@@ -62,12 +62,18 @@ def root():
 def debug_env():
     """Debug endpoint to check environment variables"""
     env_vars = {}
+    all_env_vars = {}
+    
+    # Get all environment variables for debugging
     for key, value in os.environ.items():
+        all_env_vars[key] = 'SET' if value else 'NOT SET'
         if any(prefix in key.upper() for prefix in ['TWILIO', 'DASHSCOPE', 'SECRET', 'DATABASE']):
             env_vars[key] = 'SET' if value else 'NOT SET'
+    
     return jsonify({
-        'message': 'Environment variables debug',
-        'variables': env_vars
+        'message': 'Environment variables debug - Redeploy Test',
+        'target_variables': env_vars,
+        'all_variables': all_env_vars
     }), 200
 
 # Simple test endpoint
