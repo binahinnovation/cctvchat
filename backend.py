@@ -50,7 +50,7 @@ class User(UserMixin, db.Model):
 
 @login_manager.user_loader
 def load_user(user_id):
-    return User.query.get(int(user_id))
+    return db.session.get(User, int(user_id))
 
 # Root endpoint for health checks
 @app.route('/')
@@ -415,14 +415,21 @@ def analyze_video():
         # Build an accessible video URL
         if video.video_type == 'upload' and video.file_path_or_url:
             filename = os.path.basename(video.file_path_or_url)
-            video_url = request.host_url.rstrip('/') + f"/api/video_file/{filename}"
+            # Use APP_BASE_URL if available, otherwise construct from request
+            base_url = os.environ.get('APP_BASE_URL', request.host_url.rstrip('/'))
+            video_url = f"{base_url}/api/video_file/{filename}"
         else:
             video_url = video.file_path_or_url
+
+        print(f"Video URL constructed: {video_url}")  # Debug logging
 
         # Initialize DashScope OpenAI-compatible client
         dashscope_key = os.environ.get('DASHSCOPE_API_KEY')
         if not dashscope_key:
+            print("DASHSCOPE_API_KEY not found in environment variables")
             return jsonify({'error': 'DASHSCOPE_API_KEY not configured on backend'}), 500
+
+        print(f"Using DashScope API key: {dashscope_key[:10]}...")  # Debug logging
 
         client = OpenAI(
             api_key=dashscope_key,
@@ -446,6 +453,8 @@ def analyze_video():
             },
         ]
 
+        print(f"Sending request to Qwen-VL with video URL: {video_url}")  # Debug logging
+
         completion = client.chat.completions.create(
             model="qwen-vl-max",
             messages=messages,
@@ -453,9 +462,13 @@ def analyze_video():
         )
 
         answer = completion.choices[0].message.content if completion and completion.choices else "No answer generated."
+        print(f"Received answer from Qwen-VL: {answer[:100]}...")  # Debug logging
         return jsonify({'answer': answer}), 200
 
     except Exception as e:
+        print(f"Error in analyze_video: {str(e)}")  # Debug logging
+        import traceback
+        traceback.print_exc()  # Print full stack trace
         return jsonify({'error': f'AI analysis failed: {str(e)}'}), 500
 
 # Add chat endpoint
@@ -554,13 +567,28 @@ def twilio_webhook():
     try:
         from twilio.request_validator import RequestValidator
         
+        # Get Twilio auth token
+        twilio_auth_token = os.environ.get('TWILIO_AUTH_TOKEN', '')
+        if not twilio_auth_token:
+            print("TWILIO_AUTH_TOKEN not found in environment variables")
+            return 'Twilio auth token not configured', 403
+        
         # Validate Twilio signature
-        validator = RequestValidator(os.environ.get('TWILIO_AUTH_TOKEN', ''))
+        validator = RequestValidator(twilio_auth_token)
         url = request.url
         params = request.form.to_dict()
         signature = request.headers.get('X-Twilio-Signature', '')
         
-        if not validator.validate(url, params, signature):
+        print(f"Validating Twilio signature for URL: {url}")
+        print(f"Signature present: {bool(signature)}")
+        print(f"Params keys: {list(params.keys())}")
+        
+        # For development/testing, you might want to skip validation
+        # In production, always validate
+        skip_validation = os.environ.get('SKIP_TWILIO_VALIDATION', 'false').lower() == 'true'
+        
+        if not skip_validation and not validator.validate(url, params, signature):
+            print("Twilio signature validation failed")
             return 'Invalid signature', 403
         
         # Extract message data
@@ -586,7 +614,7 @@ def twilio_webhook():
             if link_token:
                 # Mark token as used and link user
                 link_token.used = True
-                user = User.query.get(link_token.user_id)
+                user = db.session.get(User, link_token.user_id)
                 if user:
                     user.whatsapp_number = normalized_number
                     user.whatsapp_linked_at = datetime.utcnow()
@@ -615,6 +643,8 @@ def twilio_webhook():
     except Exception as e:
         # Log error and send friendly message
         print(f"Twilio webhook error: {e}")
+        import traceback
+        traceback.print_exc()  # Print full stack trace
         twiml = '<Response><Message>Sorry, something went wrong. Please try again later.</Message></Response>'
         return Response(twiml, mimetype='text/xml')
 
